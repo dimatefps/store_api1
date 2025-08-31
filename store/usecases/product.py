@@ -6,6 +6,7 @@ from store.db.mongo import db_client
 from store.models.product import ProductModel
 from store.schemas.product import ProductIn, ProductOut, ProductUpdate, ProductUpdateOut
 from store.core.exceptions import NotFoundException
+from datetime import datetime
 
 
 class ProductUsecase:
@@ -28,17 +29,28 @@ class ProductUsecase:
 
         return ProductOut(**result)
 
-    async def query(self) -> List[ProductOut]:
-        return [ProductOut(**item) async for item in self.collection.find()]
+    async def query(self, min_price: float | None = None, max_price: float | None = None) -> List[ProductOut]:
+        filtro = {}
+        if min_price is not None and max_price is not None:
+            filtro["price"] = {"$gt": min_price, "$lt": max_price}
+
+        cursor = self.collection.find(filtro)
+        produtos = await cursor.to_list(length=100)
+        return [ProductOut.model_validate(prod) for prod in produtos]
+    
+
 
     async def update(self, id: UUID, body: ProductUpdate) -> ProductUpdateOut:
-        result = await self.collection.find_one_and_update(
-            filter={"id": id},
-            update={"$set": body.model_dump(exclude_none=True)},
-            return_document=pymongo.ReturnDocument.AFTER,
-        )
+        data = body.model_dump(exclude_unset=True)
+        data["updated at"] = datetime.utcnow()
+        result = await self.collection.update_one({"id": id}, {"$set": data})
 
-        return ProductUpdateOut(**result)
+        if result.matched_count == 0:
+            raise NotFoundException("Produto não encontrado para atualização")
+        
+        updated = await self.collection.find_one({"id": id})
+
+        return ProductUpdateOut(**updated)
 
     async def delete(self, id: UUID) -> bool:
         product = await self.collection.find_one({"id": id})
